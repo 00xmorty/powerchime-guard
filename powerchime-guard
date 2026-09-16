@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+"""Read-only PowerChime preference and power-source inspector."""
+
+import argparse
+import json
+import platform
+import subprocess
+import sys
+from pathlib import Path
+
+VERSION = "0.1.0"
+DOMAIN = "com.apple.PowerChime"
+KEY = "ChimeOnAllHardware"
+APP = Path("/System/Library/CoreServices/PowerChime.app")
+
+
+def run(command):
+    try:
+        return subprocess.run(
+            command, capture_output=True, text=True, timeout=3, check=False
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return type("Result", (), {"returncode": 2, "stdout": "", "stderr": str(error)})()
+
+
+def normalize_preference(value):
+    if value is None:
+        return "default"
+    if isinstance(value, bool):
+        return "enabled" if value else "disabled"
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "enabled"}:
+        return "enabled"
+    if text in {"0", "false", "no", "disabled"}:
+        return "disabled"
+    if text == "default":
+        return "default"
+    raise ValueError("preference must be default, enabled, disabled, true, or false")
+
+
+def inspect_live():
+    if platform.system() != "Darwin":
+        raise RuntimeError("live inspection requires macOS; use --input for offline tests")
+
+    pref = run(["defaults", "read", DOMAIN, KEY])
+    if pref.returncode == 0:
+        preference = normalize_preference(pref.stdout)
+    elif "does not exist" in pref.stderr or "not found" in pref.stderr.lower():
+        preference = "default"
+    else:
+        raise RuntimeError("defaults query failed: " + pref.stderr.strip())
+
+    power = run(["pmset", "-g", "ps"])
+    if power.returncode != 0:
+        raise RuntimeError("pmset query failed: " + power.stderr.strip())
+    first_line = power.stdout.splitlines()[0] if power.stdout.splitlines() else "unknown"
+    source = first_line.split("'")[1] if "'" in first_line else first_line.strip()
+
+    return {
+        "platform": "Darwin",
+        "preference": preference,
+        "power_source": source,
+        "powerchime_present": APP.exists(),
+    }
+
+
+def inspect_fixture(path):
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"invalid input: {error}") from error
+    required = {"platform", "preference", "power_source", "powerchime_present"}
+    if not required.issubset(data):
+        raise ValueError("input requires platform, preference, power_source, powerchime_present")
+    if not isinstance(data["powerchime_present"], bool):
+        raise ValueError("powerchime_present must be boolean")
+    data["preference"] = normalize_preference(data["preference"])
+    return data
+
+
+def findings(data):
+    items = []
+    if not data["powerchime_present"]:
+        items.append("PowerChime app was not found; this macOS version may use another mechanism.")
+    if data["preference"] == "disabled":
+        items.append("The user preference requests that charging chimes stay off.")
+    elif data["preference"] == "enabled":
+        items.append("The user preference explicitly allows charging chimes.")
+    else:
+        items.append("No user override is stored; macOS controls the default behavior.")
+    if "AC" in data["power_source"].upper():
+        items.append("AC power is connected now; this snapshot cannot detect earlier reconnects.")
+    else:
+        items.append("AC power is not reported now; inspect the cable, dock, and port if it cycles.")
+    items.append("Repeated chimes can indicate power negotiation or a loose cable; muting is not a repair.")
+    return items
+
+
+def plan(mode):
+    if mode == "disable":
+        return [f"defaults write {DOMAIN} {KEY} -bool false"]
+    return [f"defaults delete {DOMAIN} {KEY}"]
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Inspect the macOS charging-chime preference without changing it."
+    )
+    parser.add_argument("--input", metavar="FILE", help="read a JSON fixture instead of live state")
+    parser.add_argument("--json", action="store_true", help="print machine-readable output")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--plan-disable", action="store_true", help="print a disable command only")
+    group.add_argument("--plan-restore", action="store_true", help="print a restore command only")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+    try:
+        data = inspect_fixture(args.input) if args.input else inspect_live()
+    except (RuntimeError, ValueError) as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 2
+
+    result = {**data, "findings": findings(data), "changed": False}
+    mode = "disable" if args.plan_disable else "restore" if args.plan_restore else None
+    if mode:
+        result["plan"] = plan(mode)
+
+    if args.json:
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0
+
+    print("PowerChime Guard — read-only charging-chime inspector")
+    print(f"Preference: {data['preference']}")
+    print(f"Power source: {data['power_source']}")
+    print(f"PowerChime app: {'present' if data['powerchime_present'] else 'not found'}")
+    for item in result["findings"]:
+        print(f"- {item}")
+    if mode:
+        print("PLAN ONLY — review and run manually; this tool changed nothing:")
+        for command in result["plan"]:
+            print(command)
+    print("LIMIT: one snapshot cannot prove why a chime repeated or certify a cable/dock.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
