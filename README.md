@@ -26,6 +26,14 @@ Plans are text only. Review and run a printed command manually if you choose. JS
 ./powerchime-guard --input tests/fixture.json --plan-disable
 ```
 
+In v0.2.0, compare two manually saved offline JSON snapshots without contacting a service:
+
+```sh
+./powerchime-guard --input before.json --compare after.json --json
+```
+
+Each file uses the four keys shown in `tests/fixture.json`. Only recognized `AC Power` / `Battery Power` values are classified; unfamiliar power-source text remains `unknown`. A transition is a clue, not evidence of the cause of a chime. Review local snapshots for sensitive text before sharing. Comparison does not collect or save snapshots for you.
+
 Exit codes: `0` inspection completed; `2` unsupported platform, invalid fixture, failed query, or timeout.
 
 ## Example
@@ -57,6 +65,7 @@ LIMIT: one snapshot cannot prove why a chime repeated or certify a cable/dock.
 - `ChimeOnAllHardware` is an undocumented, version-sensitive preference and may stop working in future macOS releases.
 - A stored preference does not prove whether a sound played, whether the setting took effect immediately, or whether it survives an OS update.
 - One power-source snapshot cannot detect intermittent reconnects, measure cable quality, certify a charger/dock, or diagnose hardware.
+- Two offline snapshots cannot establish when a chime occurred or prove a particular dock/cable caused a transition; unknown states are not treated as disconnections.
 - Silencing a repeated chime can hide a power-negotiation symptom. Inspect the cable, port, charger, and dock instead of treating mute as a repair.
 - Manual commands change user preferences. Record the prior state and understand the command before running one.
 

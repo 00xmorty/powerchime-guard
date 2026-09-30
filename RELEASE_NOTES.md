@@ -1,3 +1,12 @@
+# v0.2.0
+
+- Compare two manually saved offline snapshots with `--input before.json --compare after.json --json`.
+- Classify recognized AC/battery transitions without treating unknown text as a disconnection.
+- Add fixture validation and transition/unknown/invocation regression tests.
+- Remains read-only: no preference changes, daemons, network access or automatic snapshot capture.
+
+A transition is a clue, not proof of a chime cause or cable quality.
+
 # v0.1.0
 
 First public release.

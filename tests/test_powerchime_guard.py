@@ -63,6 +63,30 @@ class PowerChimeGuardTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("ERROR", result.stderr)
 
+    def test_compare_offline_transition_and_unknown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            second = Path(directory) / "second.json"
+            second.write_text(json.dumps({"platform": "Darwin", "preference": "default",
+                "power_source": "Battery Power", "powerchime_present": True}), encoding="utf-8")
+            result = self.run_cli("--input", str(ROOT / "tests/fixture.json"),
+                                  "--compare", str(second), "--json")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)["comparison"]["transition"], "changed")
+            second.write_text(second.read_text().replace("Battery Power", "unknown"), encoding="utf-8")
+            result = self.run_cli("--input", str(ROOT / "tests/fixture.json"),
+                                  "--compare", str(second), "--json")
+            self.assertEqual(json.loads(result.stdout)["comparison"]["transition"], "unknown")
+
+    def test_compare_requires_offline_input(self):
+        result = self.run_cli("--compare", str(ROOT / "tests/fixture.json"))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("requires --input", result.stderr)
+
+    def test_unrecognized_source_does_not_claim_disconnection(self):
+        result = MODULE.findings({"powerchime_present": True,
+            "preference": "default", "power_source": "unknown"})
+        self.assertTrue(any("do not infer" in item for item in result))
+
 
 if __name__ == "__main__":
     unittest.main()

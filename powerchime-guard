@@ -8,7 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 DOMAIN = "com.apple.PowerChime"
 KEY = "ChimeOnAllHardware"
 APP = Path("/System/Library/CoreServices/PowerChime.app")
@@ -74,8 +74,26 @@ def inspect_fixture(path):
         raise ValueError("input requires platform, preference, power_source, powerchime_present")
     if not isinstance(data["powerchime_present"], bool):
         raise ValueError("powerchime_present must be boolean")
+    if data["platform"] != "Darwin" or not isinstance(data["power_source"], str):
+        raise ValueError("input requires Darwin platform and string power_source")
     data["preference"] = normalize_preference(data["preference"])
     return data
+
+def power_class(source):
+    source = source.strip().lower()
+    if source in {"ac power", "ac", "external power"}:
+        return "AC"
+    if source in {"battery power", "battery"}:
+        return "battery"
+    return "unknown"
+
+
+def compare_power(before, after):
+    old, new = power_class(before["power_source"]), power_class(after["power_source"])
+    return {"before": old, "after": new,
+            "transition": "unknown" if "unknown" in (old, new) else
+            ("changed" if old != new else "stable"),
+            "preference_changed": before["preference"] != after["preference"]}
 
 
 def findings(data):
@@ -88,10 +106,12 @@ def findings(data):
         items.append("The user preference explicitly allows charging chimes.")
     else:
         items.append("No user override is stored; macOS controls the default behavior.")
-    if "AC" in data["power_source"].upper():
+    if power_class(data["power_source"]) == "AC":
         items.append("AC power is connected now; this snapshot cannot detect earlier reconnects.")
-    else:
+    elif power_class(data["power_source"]) == "battery":
         items.append("AC power is not reported now; inspect the cable, dock, and port if it cycles.")
+    else:
+        items.append("Power source is unknown; do not infer a disconnection from this snapshot.")
     items.append("Repeated chimes can indicate power negotiation or a loose cable; muting is not a repair.")
     return items
 
@@ -107,6 +127,7 @@ def parse_args():
         description="Inspect the macOS charging-chime preference without changing it."
     )
     parser.add_argument("--input", metavar="FILE", help="read a JSON fixture instead of live state")
+    parser.add_argument("--compare", metavar="FILE", help="compare a second offline snapshot (requires --input)")
     parser.add_argument("--json", action="store_true", help="print machine-readable output")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--plan-disable", action="store_true", help="print a disable command only")
@@ -117,13 +138,19 @@ def parse_args():
 
 def main():
     args = parse_args()
+    if args.compare and not args.input:
+        print("ERROR: --compare requires --input", file=sys.stderr)
+        return 2
     try:
         data = inspect_fixture(args.input) if args.input else inspect_live()
+        second = inspect_fixture(args.compare) if args.compare else None
     except (RuntimeError, ValueError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 2
 
     result = {**data, "findings": findings(data), "changed": False}
+    if second is not None:
+        result["comparison"] = compare_power(data, second)
     mode = "disable" if args.plan_disable else "restore" if args.plan_restore else None
     if mode:
         result["plan"] = plan(mode)
@@ -138,6 +165,10 @@ def main():
     print(f"PowerChime app: {'present' if data['powerchime_present'] else 'not found'}")
     for item in result["findings"]:
         print(f"- {item}")
+    if second is not None:
+        comparison = result["comparison"]
+        print(f"Comparison: {comparison['before']} -> {comparison['after']} ({comparison['transition']})")
+        print("LIMIT: two snapshots do not prove why a chime sounded or establish cable health.")
     if mode:
         print("PLAN ONLY — review and run manually; this tool changed nothing:")
         for command in result["plan"]:
